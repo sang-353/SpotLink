@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.experimental.Accessors;
@@ -11,99 +12,62 @@ import lombok.experimental.Accessors;
 import java.io.Serializable;
 import java.time.LocalDateTime;
 
-/**
- * <p>
- *
- * </p>
- *
- * @author 虎哥
- * @since 2021-12-22
- */
 @Data
 @EqualsAndHashCode(callSuper = false)
 @Accessors(chain = true)
 @TableName("tb_shop")
+@Schema(description = "商铺信息")
 public class Shop implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    /**
-     * 主键
-     */
+    @Schema(description = "主键 ID", example = "1")
     @TableId(value = "id", type = IdType.AUTO)
     private Long id;
 
-    /**
-     * 商铺名称
-     */
+    @Schema(description = "商铺名称", example = "星巴克（国贸店）")
     private String name;
 
-    /**
-     * 商铺类型的id
-     */
+    @Schema(description = "商铺类型 ID（关联 tb_shop_type）", example = "1")
     private Long typeId;
 
-    /**
-     * 商铺图片，多个图片以','隔开
-     */
+    @Schema(description = "商铺图片，多个以逗号分隔", example = "/imgs/shop/1.jpg,/imgs/shop/2.jpg")
     private String images;
 
-    /**
-     * 商圈，例如陆家嘴
-     */
+    @Schema(description = "商圈", example = "陆家嘴")
     private String area;
 
-    /**
-     * 地址
-     */
+    @Schema(description = "详细地址", example = "上海市浦东新区陆家嘴环路 1000 号")
     private String address;
 
-    /**
-     * 经度
-     */
+    @Schema(description = "经度", example = "121.506379")
     private Double x;
 
-    /**
-     * 维度
-     */
+    @Schema(description = "纬度", example = "31.245414")
     private Double y;
 
-    /**
-     * 均价，取整数
-     */
+    @Schema(description = "人均价格（元）", example = "45")
     private Long avgPrice;
 
-    /**
-     * 销量
-     */
+    @Schema(description = "销量", example = "1280")
     private Integer sold;
 
-    /**
-     * 评论数量
-     */
+    @Schema(description = "评论数量", example = "256")
     private Integer comments;
 
-    /**
-     * 评分，1~5分，乘10保存，避免小数
-     */
+    @Schema(description = "评分（1~5 分，乘 10 存储避免小数）", example = "45")
     private Integer score;
 
-    /**
-     * 营业时间，例如 10:00-22:00
-     */
+    @Schema(description = "营业时间", example = "10:00-22:00")
     private String openHours;
 
-    /**
-     * 创建时间
-     */
+    @Schema(description = "创建时间")
     private LocalDateTime createTime;
 
-    /**
-     * 更新时间
-     */
+    @Schema(description = "更新时间")
     private LocalDateTime updateTime;
 
-
+    @Schema(description = "距离（米，GEO 查询时动态填充，非数据库字段）", example = "1234.5")
     @TableField(exist = false)
     private Double distance;
 }
