@@ -9,13 +9,14 @@ import com.sang.entity.UserInfo;
 import com.sang.service.IUserInfoService;
 import com.sang.service.IUserService;
 import com.sang.utils.UserHolder;
+import jakarta.annotation.Resource;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpSession;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.web.bind.annotation.*;
 
-import javax.annotation.Resource;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpSession;
+
 
 /**
  * <p>

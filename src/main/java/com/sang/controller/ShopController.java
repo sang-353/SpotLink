@@ -7,9 +7,9 @@ import com.sang.dto.Result;
 import com.sang.entity.Shop;
 import com.sang.service.IShopService;
 import com.sang.utils.SystemConstants;
+import jakarta.annotation.Resource;
 import org.springframework.web.bind.annotation.*;
 
-import javax.annotation.Resource;
 
 /**
  * <p>

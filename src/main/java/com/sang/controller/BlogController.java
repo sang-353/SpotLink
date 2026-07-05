@@ -8,9 +8,10 @@ import com.sang.entity.Blog;
 import com.sang.service.IBlogService;
 import com.sang.utils.SystemConstants;
 import com.sang.utils.UserHolder;
+import jakarta.annotation.Resource;
 import org.springframework.web.bind.annotation.*;
 
-import javax.annotation.Resource;
+
 import java.util.List;
 
 /**

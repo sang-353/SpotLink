@@ -16,11 +16,12 @@ import com.sang.service.IFollowService;
 import com.sang.service.IUserService;
 import com.sang.utils.SystemConstants;
 import com.sang.utils.UserHolder;
+import jakarta.annotation.Resource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 
-import javax.annotation.Resource;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;

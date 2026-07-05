@@ -4,9 +4,9 @@ package com.sang.controller;
 import com.sang.dto.Result;
 import com.sang.entity.Voucher;
 import com.sang.service.IVoucherService;
+import jakarta.annotation.Resource;
 import org.springframework.web.bind.annotation.*;
 
-import javax.annotation.Resource;
 
 /**
  * <p>

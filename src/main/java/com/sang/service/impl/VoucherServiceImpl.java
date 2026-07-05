@@ -7,11 +7,11 @@ import com.sang.mapper.VoucherMapper;
 import com.sang.entity.SeckillVoucher;
 import com.sang.service.ISeckillVoucherService;
 import com.sang.service.IVoucherService;
+import jakarta.annotation.Resource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import javax.annotation.Resource;
 import java.util.List;
 
 /**

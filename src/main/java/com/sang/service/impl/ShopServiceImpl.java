@@ -12,6 +12,7 @@ import com.sang.service.IShopService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.sang.utils.CacheClient;
 import com.sang.utils.SystemConstants;
+import jakarta.annotation.Resource;
 import org.springframework.data.geo.Distance;
 import org.springframework.data.geo.GeoResult;
 import org.springframework.data.geo.GeoResults;
@@ -21,7 +22,6 @@ import org.springframework.data.redis.domain.geo.GeoReference;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import javax.annotation.Resource;
 
 import java.util.*;
 import java.util.concurrent.TimeUnit;

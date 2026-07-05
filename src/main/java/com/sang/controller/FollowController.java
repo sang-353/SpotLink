@@ -3,9 +3,9 @@ package com.sang.controller;
 
 import com.sang.dto.Result;
 import com.sang.service.IFollowService;
+import jakarta.annotation.Resource;
 import org.springframework.web.bind.annotation.*;
 
-import javax.annotation.Resource;
 
 /**
  * <p>
