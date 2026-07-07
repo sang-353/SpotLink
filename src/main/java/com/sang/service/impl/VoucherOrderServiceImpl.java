@@ -57,9 +57,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         SECKILL_SCRIPT.setLocation(new ClassPathResource("seckill.lua"));
         SECKILL_SCRIPT.setResultType(Long.class);
     }
-    private final BlockingQueue<VoucherOrder> orderTasks = new ArrayBlockingQueue<>(1024 * 1024);
     private static final ExecutorService EXECUTOR_ORDER_EXECUTOR = Executors.newSingleThreadExecutor();
     private IVoucherOrderService proxy;
+    private volatile boolean running = true;
 
 
     @PostConstruct
@@ -67,12 +67,27 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         // 启动线程处理订单
         EXECUTOR_ORDER_EXECUTOR.submit(new VoucherOrderHandler());
     }
+
+    @jakarta.annotation.PreDestroy
+    private void destroy() {
+        running = false;
+        EXECUTOR_ORDER_EXECUTOR.shutdown();
+        try {
+            if (!EXECUTOR_ORDER_EXECUTOR.awaitTermination(5, TimeUnit.SECONDS)) {
+                EXECUTOR_ORDER_EXECUTOR.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            EXECUTOR_ORDER_EXECUTOR.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private class VoucherOrderHandler implements Runnable {
         // 先在redis执行 xgroup create stream.orders g1 0 mkstream
         String queueName = "stream.orders";
         @Override
         public void run() {
-            while (true) {
+            while (running) {
                 try {
                     // 1.获取消息队列中的订单信息 xreadgroup group g1 c1 count 1 block 2000 stream stream.orders >
                     List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
@@ -89,11 +104,15 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                     MapRecord<String, Object, Object> record = list.get(0);
                     Map<Object, Object> value = record.getValue();
                     VoucherOrder voucherOrder = BeanUtil.fillBeanWithMap(value, new VoucherOrder(), true);
-                    // 5.ack确认
-                    stringRedisTemplate.opsForStream().acknowledge(queueName, "g1", record.getId());
-                    // 6.执行创建订单
+                    // 5.执行创建订单
                     handleVoucherOrder(voucherOrder);
+                    // 6.ack确认
+                    stringRedisTemplate.opsForStream().acknowledge(queueName, "g1", record.getId());
                 } catch (Exception e) {
+                    if (!running) {
+                        // 应用正在关闭，忽略连接销毁异常
+                        break;
+                    }
                     log.error("处理订单异常", e);
                     handlePendingList();
                 }
@@ -102,7 +121,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
         private void handlePendingList() {
 
-            while (true) {
+            while (running) {
                 try {
                     // 1.获取Pending-list中的订单信息 xreadgroup group g1 c1 count 1 stream stream.orders 0
                     List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
@@ -119,16 +138,20 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                     MapRecord<String, Object, Object> record = list.get(0);
                     Map<Object, Object> value = record.getValue();
                     VoucherOrder voucherOrder = BeanUtil.fillBeanWithMap(value, new VoucherOrder(), true);
-                    // 5.ack确认
-                    stringRedisTemplate.opsForStream().acknowledge(queueName, "g1", record.getId());
-                    // 6.执行创建订单
+                    // 5.执行创建订单
                     handleVoucherOrder(voucherOrder);
+                    // 6.ack确认
+                    stringRedisTemplate.opsForStream().acknowledge(queueName, "g1", record.getId());
                 } catch (Exception e) {
+                    if (!running) {
+                        break;
+                    }
                     log.error("处理pending-list订单异常", e);
                     try {
                         Thread.sleep(20);
                     } catch (InterruptedException ex) {
-                        throw new RuntimeException(ex);
+                        Thread.currentThread().interrupt();
+                        break;
                     }
                 }
             }
@@ -158,7 +181,6 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     private void handleVoucherOrder(VoucherOrder voucherOrder) {
         Long userId = voucherOrder.getUserId();
-        // 此处可以不加锁
         // 创建锁对象
         RLock lock = redissonClient.getLock("lock:order" + userId);
         // 获取锁 无参则为不等待，30秒释放
@@ -170,8 +192,12 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         }
 
         try {
-            // 返回订单ID
-            proxy.createVoucherOrder(voucherOrder);
+            // 获取代理对象（防止 @Transactional 自调用失效）
+            IVoucherOrderService currentProxy = proxy;
+            if (currentProxy == null) {
+                currentProxy = (IVoucherOrderService) AopContext.currentProxy();
+            }
+            currentProxy.createVoucherOrder(voucherOrder);
         } catch (IllegalStateException e) {
             throw new RuntimeException(e);
         }finally {
