@@ -8,7 +8,6 @@ spring:
     url: jdbc:mysql://127.0.0.1:3306/hmdp_db?useSSL=false&serverTimezone=UTC
     username: root
     password: xie060106
-
   jackson:
     default-property-inclusion: non_null # JSON处理时忽略非空字段
   data:
@@ -22,6 +21,26 @@ spring:
           max-idle: 10
           min-idle: 1
           time-between-eviction-runs: 10s
+  rabbitmq:
+    listener:
+      simple:
+        prefetch: 5
+        concurrency: 3
+        max-concurrency: 5
+        acknowledge-mode: manual
+        retry:
+          enabled: false
+#          initial-interval: 200ms
+#          max-attempts: 3
+    host: localhost
+    port: 5672
+    username: sang
+    password: dev123456
+    virtual-host: /spotlink
+    publisher-confirm-type: correlated
+    publisher-returns: false
+
+
 mybatis-plus:
   type-aliases-package: com.sang.entity # 别名扫描包
 # springdoc-openapi 配置

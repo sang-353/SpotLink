@@ -21,4 +21,8 @@ public class RedisConstants {
     public static final String FEED_KEY = "feed:";
     public static final String SHOP_GEO_KEY = "shop:geo:";
     public static final String USER_SIGN_KEY = "sign:";
+
+
+    public static final String SECKILL_ORDER_DEDUP_KEY = "seckill:order:dedup:";
+    public static final Long SECKILL_ORDER_DEDUP_TTL = 7 * 24 * 3600L;  // 7 天
 }
