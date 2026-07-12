@@ -1,5 +1,7 @@
 HELP.md
 target/
+node_modules/
+.codegraph/
 !.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/

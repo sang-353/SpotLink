@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @RestController
 @RequestMapping("/voucher-order")
-@Tag(name = "秒杀订单", description = "高并发秒杀下单，基于 Lua 脚本原子操作 + Redis Stream 消息队列异步落库")
+@Tag(name = "秒杀订单", description = "高并发秒杀下单，基于 Lua 脚本原子操作 + RabbitMQ 消息队列异步落库")
 public class VoucherOrderController {
     @Resource
     private IVoucherOrderService voucherOrderService;

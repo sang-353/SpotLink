@@ -1,6 +1,5 @@
 package com.sang.utils;
 
-import cn.hutool.core.util.BooleanUtil;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONObject;
@@ -8,6 +7,7 @@ import cn.hutool.json.JSONUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
+
 import java.time.LocalDateTime;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -23,40 +23,46 @@ public class CacheClient {
     private final StringRedisTemplate stringRedisTemplate;
 
     private static final ExecutorService CACHE_REBUILD_EXECUTOR = Executors.newFixedThreadPool(10);
-    public CacheClient(StringRedisTemplate stringRedisTemplate) {
+    private final SimpleRedisLock simpleRedisLock;
+
+    public CacheClient(StringRedisTemplate stringRedisTemplate, SimpleRedisLock simpleRedisLock) {
         this.stringRedisTemplate = stringRedisTemplate;
+        this.simpleRedisLock = simpleRedisLock;
     }
 
     public void set(String key, Object value, Long time, TimeUnit unit) {
-        stringRedisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(value), time,unit);
+        stringRedisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(value), time, unit);
     }
-/**
- * 设置逻辑过期缓存
- * @param key Redis中的键
- * @param value 需要存储的值
- * @param time 过期时间
- * @param unit 时间单位
- */
+
+    /**
+     * 设置逻辑过期缓存
+     *
+     * @param key   Redis中的键
+     * @param value 需要存储的值
+     * @param time  过期时间
+     * @param unit  时间单位
+     */
     public void setWithLogicalExpire(String key, Object value, Long time, TimeUnit unit) {
         // 设置逻辑过期
         RedisData redisData = new RedisData();
         redisData.setData(value);
         redisData.setExpireTime(LocalDateTime.now().plusSeconds(unit.toSeconds(time)));
         // 写入Redis
-        stringRedisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(redisData), time,unit);
+        stringRedisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(redisData), time, unit);
     }
 
-/**
- * 使用缓存查询数据的方法，实现了缓存穿透的处理
- * @param keyPrefix 缓存键的前缀
- * @param id 查询数据的ID
- * @param type 返回数据的类型
- * @param dbFallBack 数据库查询的函数式接口
- * @param time 缓存过期时间
- * @param unit 时间单位
- * @return 查询结果，可能是数据或null
- */
-    public <R,ID> R queryWithPassThrough(
+    /**
+     * 使用缓存查询数据的方法，实现了缓存穿透的处理
+     *
+     * @param keyPrefix  缓存键的前缀
+     * @param id         查询数据的ID
+     * @param type       返回数据的类型
+     * @param dbFallBack 数据库查询的函数式接口
+     * @param time       缓存过期时间
+     * @param unit       时间单位
+     * @return 查询结果，可能是数据或null
+     */
+    public <R, ID> R queryWithPassThrough(
             String keyPrefix, ID id, Class<R> type, Function<ID, R> dbFallBack, Long time, TimeUnit unit) {
         // 合成key
         String key = keyPrefix + id;
@@ -77,7 +83,7 @@ public class CacheClient {
         // 数据库不存在，返回错误
         if (r == null) {
             // 将空值写入redis(解决缓存穿透）
-            stringRedisTemplate.opsForValue().set(key, "", CACHE_NULL_TTL + RandomUtil.randomLong(0,1), TimeUnit.MINUTES);
+            stringRedisTemplate.opsForValue().set(key, "", CACHE_NULL_TTL + RandomUtil.randomLong(0, 1), TimeUnit.MINUTES);
             return null;
         }
         // 数据库存在，存入redis，返回
@@ -85,23 +91,24 @@ public class CacheClient {
         return r;
     }
 
-/**
- * 使用逻辑过期方式查询缓存数据，并在缓存过期时异步重建缓存
- * @param <R> 返回数据类型
- * @param <ID> 查询条件ID类型
- * @param keyPrefix 缓存key前缀
- * @param id 查询条件ID
- * @param type 返回数据类型Class对象
- * @param dbFallBack 数据库查询回调函数
- * @param time 缓存过期时间
- * @param unit 时间单位
- * @return 查询结果，如果不存在则返回null
- */
+    /**
+     * 使用逻辑过期方式查询缓存数据，并在缓存过期时异步重建缓存
+     *
+     * @param <R>        返回数据类型
+     * @param <ID>       查询条件ID类型
+     * @param keyPrefix  缓存key前缀
+     * @param id         查询条件ID
+     * @param type       返回数据类型Class对象
+     * @param dbFallBack 数据库查询回调函数
+     * @param time       缓存过期时间
+     * @param unit       时间单位
+     * @return 查询结果，如果不存在则返回null
+     */
     public <R, ID> R queryWithLogicalExpire(
             String keyPrefix, ID id, Class<R> type, Function<ID, R> dbFallBack, Long time, TimeUnit unit) {
         // 不需要考虑缓存穿透
 
-    // 构建完整的缓存key
+        // 构建完整的缓存key
         String key = keyPrefix + id;
         // 从redis查商铺缓存
         String json = stringRedisTemplate.opsForValue().get(key);
@@ -123,9 +130,9 @@ public class CacheClient {
         }
         // 已过期，需要缓存重建
         // 获取互斥锁
-        boolean isLock = tryLock(LOCK_SHOP_KEY + id);
+        boolean isLock = simpleRedisLock.tryLock(LOCK_SHOP_KEY, LOCK_SHOP_TTL);
         // 判断是否获取锁成功
-        if(isLock) {
+        if (isLock) {
             // 成功，开启独立线程实现缓存重建
             CACHE_REBUILD_EXECUTOR.submit(() -> {
                 try {
@@ -137,34 +144,12 @@ public class CacheClient {
                     throw new RuntimeException(e);
                 } finally {
                     // 释放锁
-                    unLock(LOCK_SHOP_KEY + id);
+                    simpleRedisLock.unlock(LOCK_SHOP_KEY);
                 }
             });
 
         }
         // 返回过期商铺信息
         return r;
-    }
-
-/**
- * 尝试获取分布式锁
- * @param key 锁的键值
- * @return 获取锁成功返回true，失败返回false
- */
-    private boolean tryLock(String key) {
-    // 使用Redis的setIfAbsent方法尝试设置键值对，如果键不存在则设置成功并返回true
-    // 同时设置10秒的过期时间，防止死锁
-        Boolean flag = stringRedisTemplate.opsForValue().setIfAbsent(key, "1", 10, TimeUnit.SECONDS);
-    // 使用BooleanUtil工具类处理可能的null值，确保返回的是boolean类型
-        return BooleanUtil.isTrue(flag);
-    }
-/**
- * 解锁方法
- * 根据提供的键从Redis中删除对应的值，实现解锁功能
- * @param key Redis中存储锁的键名
- */
-    private void unLock(String key) {
-    // 使用stringRedisTemplate删除指定key，释放锁
-        stringRedisTemplate.delete(key);
     }
 }

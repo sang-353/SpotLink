@@ -4,13 +4,13 @@ import cn.hutool.core.lang.UUID;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.stereotype.Component;
 
 import java.util.Collections;
 import java.util.concurrent.TimeUnit;
-
+@Component
 public class SimpleRedisLock implements ILock {
 
-    private final String name;
     private static final String KEY_PREFIX = "lock:";
     private static final String ID_PREFIX = UUID.randomUUID().toString(true) + "-";
     private final StringRedisTemplate stringRedisTemplate;
@@ -22,15 +22,14 @@ public class SimpleRedisLock implements ILock {
         UNLOCK_SCRIPT.setResultType(Long.class);
     }
 
-    public SimpleRedisLock(String name, StringRedisTemplate stringRedisTemplate) {
-        this.name = name;
+    public SimpleRedisLock(StringRedisTemplate stringRedisTemplate) {
         this.stringRedisTemplate = stringRedisTemplate;
     }
 
     @Override
-    public boolean tryLock(long timeoutSec) {
+    public boolean tryLock(String name, long timeoutSec) {
         // 获取当前线程id
-        String threadId = ID_PREFIX + Thread.currentThread().getId();
+        String threadId = ID_PREFIX + Thread.currentThread().threadId();
         // 尝试获取锁，设置过期时间
         Boolean success = stringRedisTemplate.opsForValue()
                 .setIfAbsent(KEY_PREFIX + name, threadId, timeoutSec, TimeUnit.SECONDS);
@@ -38,17 +37,18 @@ public class SimpleRedisLock implements ILock {
     }
 
     @Override
-    public void unlock() {
+    public void unlock(String name) {
         // 执行lua脚本
         stringRedisTemplate.execute(
                 UNLOCK_SCRIPT,
                 Collections.singletonList(KEY_PREFIX + name),
-                ID_PREFIX + Thread.currentThread().getId());
+                ID_PREFIX + Thread.currentThread().threadId());
         }
 
     }
 
     /*@Override
+    // 非原子解法，可能会出现误删锁的情况
     public void unlock() {
         // 获取当前线程id
         String threadId = ID_PREFIX + Thread.currentThread().getId();

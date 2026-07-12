@@ -11,6 +11,7 @@ import com.sang.mapper.ShopMapper;
 import com.sang.service.IShopService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.sang.utils.CacheClient;
+import com.sang.utils.SimpleRedisLock;
 import com.sang.utils.SystemConstants;
 import jakarta.annotation.Resource;
 import org.springframework.data.geo.Distance;
@@ -43,7 +44,8 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     private StringRedisTemplate stringRedisTemplate;
     @Resource
     private CacheClient cacheClient;
-
+    @Resource
+    private SimpleRedisLock simpleRedisLock;
 
     @Override
     public Result queryById(Long id) {
@@ -62,49 +64,6 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         return Result.ok(shop);
     }
 
- /*   public Shop queryWithLogicalExpire(Long id) {
-        // 不需要考虑缓存穿透
-
-        // 从redis查商铺缓存
-        String shopJson = stringRedisTemplate.opsForValue().get(CACHE_SHOP_KEY + id);
-        // 判断是否存在
-        if (StrUtil.isBlank(shopJson)) {
-            // 不存在，直接返回空
-            return null;
-        }
-        // 命中，需要先把json反序列化为对象
-        RedisData redisData = JSONUtil.toBean(shopJson, RedisData.class);
-        JSONObject data = (JSONObject) redisData.getData();
-        Shop shop = JSONUtil.toBean(data, Shop.class);
-        LocalDateTime expireTime = redisData.getExpireTime();
-
-        // 判断是否过期
-        if (expireTime.isAfter(LocalDateTime.now())) {
-            // 未过期，直接返回店铺信息
-            return shop;
-        }
-        // 已过期，需要缓存重建
-        // 获取互斥锁
-        boolean isLock = tryLock(LOCK_SHOP_KEY + id);
-        // 判断是否获取锁成功
-        if(isLock) {
-            // 成功，开启独立线程实现缓存重建
-            CACHE_REBUILD_EXECUTOR.submit(() -> {
-                try {
-                    // 重建缓存
-                    this.saveShop2Redis(id, 30*60L);
-                } catch (Exception e) {
-                    throw new RuntimeException(e);
-                } finally {
-                    // 释放锁
-                    unLock(LOCK_SHOP_KEY + id);
-                }
-            });
-
-        }
-        // 返回过期商铺信息
-        return shop;
-    }*/
     public Shop queryWithMutex(Long id) {
         // 从redis查商铺缓存
         String shopJson = stringRedisTemplate.opsForValue().get(CACHE_SHOP_KEY + id);
@@ -122,7 +81,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         Shop shop = null;
         try {
             // 1. 获取互斥锁
-            boolean isLock = tryLock(LOCK_SHOP_KEY + id);
+            boolean isLock = simpleRedisLock.tryLock(LOCK_SHOP_KEY + id,LOCK_SHOP_TTL);
             // 2. 判断是否获取成功
             if (!isLock) {
                 // 3. 失败则休眠并重试
@@ -146,45 +105,10 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
             throw new RuntimeException(e);
         } finally {
             // 释放互斥锁
-            unLock(LOCK_SHOP_KEY + id);
+            simpleRedisLock.unlock(LOCK_SHOP_KEY + id);
         }
 
         return shop;
-    }
-
-/*    public Shop queryWithPassThrough(Long id) {
-        // 从redis查商铺缓存
-        String shopJson = stringRedisTemplate.opsForValue().get(CACHE_SHOP_KEY + id);
-        // 判断是否存在
-        if (StrUtil.isNotBlank(shopJson)) {
-            // 存在，直接返回
-            return JSONUtil.toBean(shopJson, Shop.class);
-        }
-        // 判断命中的是否是空值(解决缓存穿透）
-        if (shopJson != null) {
-            // 返回一个错误信息
-            return null;
-        }
-        // 不存在，查数据库
-        Shop shop = getById(id);
-        // 数据库不存在，返回错误
-        if (shop == null) {
-            // 将空值写入redis(解决缓存穿透）
-            stringRedisTemplate.opsForValue().set(CACHE_SHOP_KEY + id, "",
-                    CACHE_NULL_TTL + RandomUtil.randomLong(0,1), TimeUnit.MINUTES);
-            return null;
-        }
-        // 数据库存在，存入redis，返回
-        stringRedisTemplate.opsForValue().set(CACHE_SHOP_KEY + id, JSONUtil.toJsonStr(shop),
-                CACHE_SHOP_TTL + RandomUtil.randomLong(0,5), TimeUnit.MINUTES);
-        return shop;
-    }*/
-    private boolean tryLock(String key) {
-        Boolean flag = stringRedisTemplate.opsForValue().setIfAbsent(key, "1", 10, TimeUnit.SECONDS);
-        return BooleanUtil.isTrue(flag);
-    }
-    private void unLock(String key) {
-        stringRedisTemplate.delete(key);
     }
 
 /*    public void saveShop2Redis(Long id, Long expireSeconds) {

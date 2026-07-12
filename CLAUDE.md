@@ -1,462 +1,259 @@
-# CLAUDE.md
+# SpotLink 项目代码图谱 (CodeGraph 分析结果)
 
-## Project Identity
-
-**SpotLink** — a high-concurrency social-commerce platform combining shop discovery, flash-sale (seckill) coupons, user check-in, and blog-based social networking. Inspired by platforms like Xiaohongshu (Little Red Book) and Dianping.
-
-- **Package**: `com.sang`
-- **Base path**: `src/main/java/com/sang/`
-- **Resources**: `src/main/resources/`
-- **Database**: `hmdp_db` (10 tables, all prefixed `tb_`)
+> **生成时间**: 2026-07-12 | **工具**: CodeGraph (npx codegraph)  
+> **索引规模**: 80 文件, 1,477 节点, 1,916 边, 2.77 MB
 
 ---
 
-## Architecture Overview
+## 项目概要
+
+**SpotLink** — 高并发社交电商平台，融合商铺发现、秒杀优惠券、用户签到、博客社交。定位类似小红书 + 大众点评。
+
+- **包名**: `com.sang`
+- **Java 21 + Spring Boot 3.5.14 + MyBatis-Plus 3.5.16**
+- **数据库**: MySQL `hmdp_db` (10 张 `tb_` 前缀表)
+- **中间件**: Redis (Lettuce) + RabbitMQ (Spring AMQP) + Redisson
+
+---
+
+## 一、架构全景图
 
 ```
-Client Request
+HTTP Request
   │
   ▼
-Interceptor Chain (order-sensitive!)
-  ├─ RefreshTokenInterceptor  (order=0 — runs first, refreshes token TTL, loads user into ThreadLocal)
-  └─ LoginInterceptor         (order=1 — blocks unauthenticated requests on protected paths)
+MvcConfig.addInterceptors()
+  ├─ RefreshTokenInterceptor (order=0) — Token → Redis Hash → UserDTO → ThreadLocal, 刷新 TTL
+  └─ LoginInterceptor (order=1)        — ThreadLocal 空 → 401 (公开路径除外)
   │
   ▼
-Controller (9 controllers, thin — delegate to Service)
+Controller (9 个, @Tag + @Operation)     ← 薄层: 参数提取 → Service → Result
   │
   ▼
-Service (10 interfaces + 10 impls — all extend MyBatis-Plus ServiceImpl<M, E>)
+Service (10 接口 + 10 实现)              ← 全部业务逻辑, extends ServiceImpl<M,E>
   │
   ▼
-Mapper (10 interfaces + MyBatis-Plus BaseMapper — no hand-written SQL except one XML)
+Mapper (10 接口, BaseMapper) + 1 XML    ← 数据访问
   │
   ▼
-MySQL (hmdp_db)  +  Redis (cache, locks, message queue, geo, bitmap, zset)
-```
-
-### Layering Rules
-
-1. **Controller** — parameter extraction + call Service + return `Result`. No business logic.
-2. **Service** — all business logic. Always program to interfaces (`IShopService`, not `ShopServiceImpl`).
-3. **Mapper** — data access only. Use MyBatis-Plus `query().eq(...)` chain in Service; rarely use XML mappers.
-4. **Entity** — POJOs matching `tb_*` tables. Use `@TableField(exist = false)` for transient fields.
-5. **DTO** — `Result` (unified response), `UserDTO`, `LoginFormDTO`, `ScrollResult`.
-
----
-
-## Directory Map
-
-```
-com.sang/
-├── SpotLinkApplication.java       ← @SpringBootApplication + @EnableAspectJAutoProxy(exposeProxy = true) + @MapperScan
-├── config/
-│   ├── MvcConfig.java             ← Interceptor registration (ORDER MATTERS: RefreshToken first, then Login)
-│   ├── RedisConfig.java           ← RedissonClient bean (single-server config)
-│   ├── MybatisConfig.java         ← MyBatis-Plus pagination plugin
-│   └── WebExceptionAdvice.java    ← @RestControllerAdvice catching RuntimeException → Result.fail("服务器异常")
-├── controller/   (9 files)
-│   ├── UserController.java        ← /user/code, /user/login, /user/me, /user/sign, /user/sign/count
-│   ├── VoucherController.java     ← /voucher/** — CRUD for coupons
-│   ├── VoucherOrderController.java← /voucher-order/seckill/{id} — flash sale entry point ★
-│   ├── ShopController.java        ← /shop/** — query by id/type/geo, update
-│   ├── ShopTypeController.java    ← /shop-type/** — category listing
-│   ├── BlogController.java        ← /blog/** — CRUD, likes, hot, feed (timeline)
-│   ├── BlogCommentsController.java← /blog-comments/** — nested comments
-│   ├── FollowController.java      ← /follow/** — follow/unfollow, common follows
-│   └── UploadController.java      ← /upload/** — file upload to local disk
-├── service/
-│   ├── I*Service.java             ← 10 interfaces, all extend IService<Entity>
-│   └── impl/
-│       ├── UserServiceImpl.java           ← Login/sign/signCount (BitMap)
-│       ├── VoucherServiceImpl.java
-│       ├── VoucherOrderServiceImpl.java   ← Flash sale core: Lua atomic + Redis Stream + Redisson lock ★
-│       ├── SeckillVoucherServiceImpl.java
-│       ├── ShopServiceImpl.java           ← Cache strategies (pass-through, mutex, logical-expire) + Geo query ★
-│       ├── ShopTypeServiceImpl.java
-│       ├── BlogServiceImpl.java           ← Blog CRUD, likes (ZSet), feed push (ZSet), scroll pagination
-│       ├── BlogCommentsServiceImpl.java
-│       ├── FollowServiceImpl.java
-│       └── UserInfoServiceImpl.java
-├── entity/       (10 POJOs matching tb_* tables, annotated with MyBatis-Plus + Lombok)
-├── mapper/       (10 interfaces extending BaseMapper<Entity>, 1 XML mapper)
-├── dto/
-│   ├── Result.java         ← {success, errorMsg, data, total} + static ok()/fail() factories
-│   ├── UserDTO.java        ← {id, nickName, icon} — minimal user info for ThreadLocal + Redis storage
-│   ├── LoginFormDTO.java   ← {phone, code, password}
-│   └── ScrollResult.java   ← {list, minTime, offset} — for ZSet-based feed pagination
-└── utils/        (13 classes — application infrastructure, NOT a dumping ground)
-    ├── CacheClient.java            ← Generic cache util: pass-through, logical-expire, mutex lock ★
-    ├── RedisIdWorker.java          ← Distributed 64-bit ID generator (timestamp << 32 | sequence) ★
-    ├── RedisConstants.java         ← All Redis key prefixes and TTLs in one place
-    ├── RedisData.java              ← Wrapper for logical-expire: {expireTime, data}
-    ├── ILock.java                  ← Lock interface: tryLock(timeoutSec), unlock()
-    ├── SimpleRedisLock.java        ← SETNX + Lua unlock (UUID prefix per JVM instance)
-    ├── RefreshTokenInterceptor.java← Interceptor: loads user from Redis Hash, refreshes TTL, sets ThreadLocal
-    ├── LoginInterceptor.java       ← Interceptor: checks ThreadLocal, returns 401 if null
-    ├── UserHolder.java             ← ThreadLocal<UserDTO> holder
-    ├── PasswordEncoder.java
-    ├── RegexUtils.java / RegexPatterns.java
-    └── SystemConstants.java        ← IMAGE_UPLOAD_DIR, USER_NICK_NAME_PREFIX, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
-```
-
-### Resources
-
-```
-resources/
-├── application.yaml
-├── db/spotlink.sql               ← Full DDL + seed data
-├── mapper/VoucherMapper.xml      ← Only manual XML mapper (seckill stock deduction)
-├── seckill.lua                   ← Atomic flash-sale script ★
-└── unlock.lua                    ← Safe distributed lock release (GET + DEL atomically)
+MySQL + Redis + RabbitMQ
 ```
 
 ---
 
-## Technology Stack (Version-Agnostic)
+## 二、核心模块调用链路 (CodeGraph 验证)
 
-| Concern | Choice | Notes |
-|---------|--------|-------|
-| Framework | Spring Boot (Web MVC) | `@RestController`, `@Service`, `@Component`, dependency injection |
-| ORM | MyBatis-Plus | `ServiceImpl<M, E>` base, chain queries via `query().eq(...)`, pagination plugin |
-| Cache / Lock / MQ / Geo / BitMap | Redis (via Spring Data Redis + Lettuce) | `StringRedisTemplate` everywhere; avoid `RedisTemplate` for consistency |
-| Distributed Lock | Redisson (`RLock`) + custom `SimpleRedisLock` | Redisson for business locks; SimpleRedisLock for lightweight scenarios |
-| JSON | Hutool `JSONUtil` | Not Jackson — match existing code |
-| Utilities | Hutool (`StrUtil`, `BeanUtil`, `RandomUtil`), Lombok | |
-| AOP | Spring AOP (`@EnableAspectJAutoProxy(exposeProxy = true)`) | Required for `AopContext.currentProxy()` in transactional self-calls |
+### 2.1 秒杀系统 ★
 
-### Key Dependency Philosophy
-
-- **Redis operations**: Always use `StringRedisTemplate` (not `RedisTemplate`). Serialize objects to JSON strings manually.
-- **JSON serialization**: Use `cn.hutool.json.JSONUtil.toJsonStr()` / `JSONUtil.toBean()`, not Jackson's `ObjectMapper`.
-- **Bean copying**: Use `cn.hutool.core.bean.BeanUtil.copyProperties()`, not Spring's `BeanUtils`.
-- **OR mapping**: All entities use MyBatis-Plus annotations (`@TableName`, `@TableId`, `@TableField`). Never write raw JDBC.
-
----
-
-## Core Design Patterns
-
-### 1. Unified Response — `Result`
-
-Every controller method returns `com.sang.dto.Result`:
-
-```java
-Result.ok()                  // success, no data
-Result.ok(data)              // success with data
-Result.ok(list, total)       // success with paginated list
-Result.fail("error message") // business error
-```
-
-Never throw exceptions for business errors. Use `Result.fail()`. Exceptions are for truly unexpected failures, caught by `WebExceptionAdvice`.
-
-### 2. User Context — ThreadLocal + Interceptors
-
-- `RefreshTokenInterceptor` (order=0): Extracts token from `Authorization` header → loads user from Redis Hash → stores in `UserHolder` (ThreadLocal) → refreshes token TTL.
-- `LoginInterceptor` (order=1): Checks `UserHolder.getUser() != null`. Returns 401 if null.
-- `UserHolder.saveUser()` / `getUser()` / `removeUser()` — always called in preHandle/afterCompletion pairs.
-
-**Excluded paths** (no login required): `/user/code`, `/user/login`, `/shop/**`, `/voucher/**`, `/shop-type/**`, `/upload/**`, `/blog/hot`.
-
-When adding new public endpoints, update both `MvcConfig.addInterceptors()`.
-
-### 3. Distributed Locking
-
-Two tiers:
-- **Redisson `RLock`**: Used in `VoucherOrderServiceImpl.handleVoucherOrder()` for per-user order deduplication (`lock:order{userId}`). Auto-renewal, 30s default lease.
-- **`SimpleRedisLock`**: SETNX-based with Lua-scripted unlock (verifies UUID prefix before deleting). Used for lightweight scenarios. Each JVM instance has a unique UUID prefix to prevent cross-instance lock release.
-
-**Pattern**:
-```java
-RLock lock = redissonClient.getLock("lock:key" + id);
-boolean isLock = lock.tryLock();  // non-blocking
-if (!isLock) { return fail/retry; }
-try {
-    // critical section
-} finally {
-    lock.unlock();
-}
-```
-
-### 4. Caching — Three-Layer Strategy (CacheClient) ★
-
-`CacheClient` is the central caching utility. It handles:
-
-#### a) Cache Penetration (`queryWithPassThrough`)
-- Query Redis first. If key exists → return.
-- If key is empty string → return null (null value cached).
-- If key missing → query DB → cache result (or cache empty string with short TTL if DB returns null).
-- Null value TTL: `CACHE_NULL_TTL + random(0,1)` minutes (randomized to avoid avalanche).
-
-#### b) Cache Breakdown — Mutex Lock (`queryWithMutex` in ShopServiceImpl, legacy)
-- On cache miss, acquire distributed lock → one thread queries DB → others wait/retry.
-- Lock key: `lock:shop:{id}`.
-
-#### c) Cache Breakdown — Logical Expire (`queryWithLogicalExpire`)
-- Data stored as `RedisData {expireTime, data}` — the Redis key itself does NOT expire.
-- On read: if `expireTime.isAfter(now)` → return cached data; else → acquire lock → async rebuild via thread pool (`CACHE_REBUILD_EXECUTOR`, 10 threads) → return stale data to caller (non-blocking).
-- Write: `setWithLogicalExpire()` wraps data in `RedisData` with logical expire timestamp.
-
-#### Cache Update Strategy
-- On DB update: **delete** the cache key (`stringRedisTemplate.delete(CACHE_SHOP_KEY + id)`). Let next read rebuild it.
-- Never update the cache value directly on writes.
-
-### 5. Redis Key Naming Convention
-
-All keys defined as constants in `RedisConstants.java`:
-
-| Constant | Pattern | Type | TTL |
-|----------|---------|------|-----|
-| `LOGIN_CODE_KEY` | `login:code:{phone}` | String | 2 min |
-| `LOGIN_USER_KEY` | `login:token:{token}` | Hash | ~360 min |
-| `CACHE_SHOP_KEY` | `cache:shop:{id}` | String (JSON) | 30 min |
-| `CACHE_SHOP_TYPE_KEY` | `cache:shop:type:{typeId}` | String (JSON) | — |
-| `LOCK_SHOP_KEY` | `lock:shop:{id}` | String | 10 sec |
-| `SECKILL_STOCK_KEY` | `seckill:stock:{voucherId}` | String (int) | — |
-| `BLOG_LIKED_KEY` | `blog:liked:{blogId}` | ZSet (userId → timestamp) | — |
-| `FEED_KEY` | `feed:{userId}` | ZSet (blogId → timestamp) | — |
-| `SHOP_GEO_KEY` | `shop:geo:{typeId}` | Geo | — |
-| `USER_SIGN_KEY` | `sign:{userId}:{yyyyMM}` | BitMap | — |
-
-**Rule**: Always add new key constants to `RedisConstants.java`. Never hardcode key strings.
-
----
-
-## Flash Sale (Seckill) System — The Most Complex Flow ★
-
-### Architecture
+这是整个项目最复杂的模块，涉及 Lua 原子脚本、RabbitMQ 异步消费、Redisson 分布式锁、幂等去重、重试+死信。
 
 ```
-User Request
-  │
-  ▼
-VoucherOrderController.seckillVoucher(voucherId)
-  │
-  ▼
-VoucherOrderServiceImpl.seckillVoucher(voucherId)
-  ├─ Generate orderId via RedisIdWorker.nextId("order")
-  ├─ Execute seckill.lua (atomic on Redis)
-  │   ├─ Check stock (seckill:stock:{id} > 0)
-  │   ├─ Check duplicate (SISMEMBER seckill:order{id} userId)
-  │   ├─ Decr stock (INCRBY -1)
-  │   ├─ Record user (SADD seckill:order{id} userId)
-  │   └─ Send to Stream (XADD stream.orders * userId voucherId id)
-  └─ Return: 0=success, 1=no stock, 2=duplicate
-  │
-  ▼ (async, background thread)
-VoucherOrderHandler (launched via @PostConstruct)
-  ├─ XREADGROUP group=g1 consumer=c1 from stream.orders (>)
-  ├─ On message → handleVoucherOrder()
-  │   ├─ Redisson lock on lock:order{userId}
-  │   ├─ proxy.createVoucherOrder(voucherOrder) ← @Transactional (needs proxy for self-invocation!)
-  │   │   ├─ Check one-user-one-order (COUNT where user_id + voucher_id)
-  │   │   ├─ Deduct stock with optimistic lock (WHERE stock > 0)
-  │   │   └─ INSERT order
-  │   └─ ACK message
-  └─ On error → handlePendingList() (reprocess from 0, i.e., pending messages)
+[入口] VoucherOrderController.seckillVoucher(voucherId)         POST /voucher-order/seckill/{id}
+  └─→ VoucherOrderServiceImpl.seckillVoucher(voucherId)  (::73)
+        ├─ UserHolder.getUser().getId()
+        ├─ stringRedisTemplate.execute(seckill.lua, voucherId, userId)
+        │     ├─ GET seckill:stock:{voucherId}        → 库存检查
+        │     ├─ SISMEMBER seckill:order{voucherId}    → 一人一单去重
+        │     ├─ INCRBY seckill:stock:{voucherId} -1   → 原子减库存
+        │     ├─ SADD seckill:order{voucherId} userId   → 标记已下单
+        │     └─ return 0(成功) / 1(库存不足) / 2(重复下单)
+        ├─ redisIdWorker.nextId("order")               → 分布式 64 位 ID
+        ├─ rabbitTemplate.convertAndSend(SeckillOrderMessage)
+        └─ [异常] rollbackSeckill() → INCR stock, SREM order set
 ```
 
-### Critical Details
-
-1. **`AopContext.currentProxy()` is required** for `@Transactional` self-invocations. The application is annotated with `@EnableAspectJAutoProxy(exposeProxy = true)`. Always use `proxy.createVoucherOrder()` not `this.createVoucherOrder()`.
-
-2. **Optimistic lock on stock deduction**: `setSql("stock = stock - 1").gt("stock", 0)`. If affected rows = 0, the update fails silently (no exception thrown).
-
-3. **Redis Stream consumer group**: Must be pre-created in Redis CLI: `XGROUP CREATE stream.orders g1 0 MKSTREAM`. This is NOT done in code.
-
-4. **Lua scripts are stored in `src/main/resources/`** and loaded via `DefaultRedisScript` with `ClassPathResource`. When refactoring, ensure the resource path remains accessible.
-
----
-
-## Distributed ID Generation — RedisIdWorker
-
-64-bit ID structure:
-```
-[ 32-bit timestamp offset ] [ 32-bit sequence number ]
-  seconds since BEGIN_TIMESTAMP   incremented per key per day
+```        
+[消费者] onSeckillOrderMessage(message, channel, deliveryTag)  (::116 @RabbitListener MANUAL_ACK)
+        ├─ SETNX seckill:order:dedup:{orderId} → 幂等检查 (7天 TTL)
+        │     └─ 已存在 → basicAck → return
+        ├─ handleVoucherOrder(message)           (::177)
+        │     ├─ redissonClient.getLock("lock:order" + userId).tryLock()
+        │     ├─ AopContext.currentProxy().createVoucherOrder(voucherOrder)  (::239 @Transactional)
+        │     │     ├─ COUNT(*) WHERE user_id + voucher_id → 一人一单 (DB 兜底)
+        │     │     ├─ UPDATE seckill_voucher SET stock=stock-1 WHERE stock>0 → 乐观锁
+        │     │     └─ INSERT voucher_order
+        │     └─ lock.unlock()
+        ├─ 成功 → basicAck
+        └─ 失败 → delete 幂等 Key → retryCount+1
+              ├─ ≤3 → rabbitTemplate.convertAndSend(重发) → basicAck 原消息
+              └─ >3 → basicReject(requeue=false) → DLQ
 ```
 
-- `BEGIN_TIMESTAMP` is a fixed epoch (2026-01-29 12:00:00 UTC in current implementation).
-- Sequence resets daily (key includes `yyyy:MM:dd`).
-- Redis key: `irc{prefix}:{yyyy:MM:dd}`. INCR is atomic.
-- Generated IDs are globally unique and roughly time-ordered.
+**关键依赖**: 
+- `seckill.lua` (纯 Redis, 不涉及 MQ)
+- `RedisIdWorker.nextId()` → 分布式 ID
+- `RabbitMQConfig` → Exchange/Queue/DLX/DLQ 全由 @Bean 声明
+- `RedissonClient` → RedisConfig.redissonClient()
 
----
+### 2.2 缓存系统
 
-## Blog & Social Features
-
-### Likes — Redis ZSet
-- Key: `blog:liked:{blogId}`, members: userId, score: timestamp.
-- `ZSCORE` to check if a user liked.
-- `ZADD` on like, `ZREM` on unlike.
-- `ZRANGE key 0 4` for top-5 likers.
-- DB `liked` column updated synchronously (+1 / -1).
-
-### Feed / Timeline — Push Model
-- When a user publishes a blog, iterate all followers and `ZADD` to each follower's feed (`feed:{followerUserId}`).
-- Feed query: `ZREVRANGEBYSCORE feed:{userId} max min LIMIT offset count` — scroll-based pagination using `ScrollResult`.
-- Offset deduplication: if consecutive entries have the same score, offset increments; otherwise resets to 1.
-
-### Comments — Two-Level Tree
-- Level 1: `parent_id = 0`.
-- Level 2: `parent_id = {level1_id}`, `answer_id = {target_comment_id}`.
-- Status field: 0=normal, 1=reported, 2=banned.
-
----
-
-## Shop & Geo Queries
-
-### Cache Strategy
-- Query by ID: `CacheClient.queryWithPassThrough()` — handles both penetration and breakdown.
-- Query by type + geo: Redis `GEOSEARCH` with `GEORADIUSBYMEMBER`-equivalent, radius 5km, with distance.
-- Distance is populated on `Shop.distance` (a `@TableField(exist = false)` transient field).
-
-### Shop Update
-- After `updateById(shop)`, delete the cache key. Do NOT update the cache value directly.
-
----
-
-## User Authentication
-
-### Login Flow
-1. `POST /user/code` → generates 6-digit code → stores in Redis `login:code:{phone}` (TTL: 2 min).
-2. `POST /user/login` → validates code → finds or creates User → stores UserDTO as Redis Hash at `login:token:{uuid}` → returns token.
-3. Client sends token in `Authorization` header on subsequent requests.
-4. `RefreshTokenInterceptor` reads the Hash, loads user into ThreadLocal, extends TTL by `LOGIN_USER_TTL + random(0,5)` minutes.
-
-### Sign-In (Check-in) — Redis BitMap
-- Key: `sign:{userId}:{yyyyMM}`.
-- `SETBIT key dayOfMonth-1 1` to sign in.
-- `BITFIELD key GET u{dayOfMonth} 0` + bit-shift loop to count consecutive sign-ins.
-
----
-
-## Database Principles
-
-### Table Naming
-- All tables: `tb_{entity_name}` (e.g., `tb_user`, `tb_voucher_order`).
-- Entity class corresponds 1:1 with table (e.g., `VoucherOrder` ↔ `tb_voucher_order`).
-
-### ID Strategies
-- Most entities: `IdType.AUTO` (database auto-increment).
-- `VoucherOrder`: `IdType.INPUT` — the ID is generated by `RedisIdWorker` and set manually before insert.
-- `SeckillVoucher`: `IdType.INPUT` on `voucher_id` (foreign key to `tb_voucher.id`).
-- `UserInfo`: `IdType.AUTO` on `user_id` (same as `tb_user.id`).
-
-### MyBatis-Plus Usage Pattern
-- `query().eq("column", value).one()` — single entity.
-- `query().eq("column", value).page(new Page<>(current, size))` — paginated.
-- `query().in("id", ids).last("ORDER BY FIELD(id, ...)")` — batch query preserving order.
-- `update().setSql("stock = stock - 1").gt("stock", 0).update()` — conditional update (returns boolean).
-
----
-
-## Configuration & Environment
-
-### application.yaml Structure
-- Server port: 8081
-- MySQL: `jdbc:mysql://127.0.0.1:3306/hmdp_db`
-- Redis: `localhost:6379`
-- Lettuce connection pool: max-active=10, max-idle=10, min-idle=1
-- Jackson: `default-property-inclusion: non_null` (null fields omitted from JSON responses)
-- MyBatis-Plus: `type-aliases-package: com.sang.entity`
-- Log level: `com.sang: debug`
-
-### Redisson
-- Configured programmatically in `RedisConfig.java` (not via application.yaml).
-- Single-server mode, same host/port/password as the main Redis config.
-
----
-
-## Code Conventions
-
-### Imports
-- No wildcard imports (never `import com.sang.utils.*`).
-- Static imports for constants from `RedisConstants` are acceptable.
-
-### Annotations
-- Controllers: `@RestController` + `@RequestMapping("/prefix")`.
-- Services: `@Service` on impl class; interface extends `IService<Entity>`.
-- Dependency injection: `@Resource` (not `@Autowired`) — existing convention.
-- Transactions: `@Transactional` only on public methods that modify multiple tables.
-
-### Logging
-- Use `@Slf4j` (Lombok).
-- `log.debug()` for normal flows, `log.error()` for exceptions.
-- Always include context in log messages (e.g., userId, token, orderId).
-
-### Response Pattern
-```java
-// Success
-return Result.ok(data);
-// Failure
-return Result.fail("specific reason in Chinese");
+```
+ShopServiceImpl.queryById(id)  (::48)
+  └─→ CacheClient.queryWithPassThrough(...)  (::59, 唯一调用者!)
+        ├─ Redis GET → 命中返回
+        ├─ 命中空值"" → null (防缓存穿透)
+        ├─ DB → dbFallBack.apply(id)
+        ├─ DB 不存在 → SET "" + 随机 TTL
+        └─ DB 存在 → SET JSON + TTL
 ```
 
-### Thread Safety
-- `UserHolder` is ThreadLocal-based — always remove in `afterCompletion`.
-- `CacheClient.CACHE_REBUILD_EXECUTOR` is a shared thread pool (10 threads).
-- `VoucherOrderHandler` runs on a single-thread executor (serial order processing).
+**缓存更新**: `ShopServiceImpl.update(shop) ::201` → `updateById` + `delete(CACHE_SHOP_KEY + id)`
 
----
+**备选方案**: `queryWithLogicalExpire` 当前无调用者，使用 RedisData {expireTime, data} + 10 线程池异步重建。
 
-## Known Caveats & Gotchas
+### 2.3 用户认证
 
-1. **`AopContext.currentProxy()`** — Required for any `@Transactional` method called from within the same class. If proxy is null, check `@EnableAspectJAutoProxy(exposeProxy = true)` on the application class.
-
-2. **Redis Stream consumer group** — Must be created manually before the application starts: `XGROUP CREATE stream.orders g1 0 MKSTREAM`. If the group already exists, use `XGROUP SETID` or `XGROUP DESTROY` + recreate. This is not automated in code.
-
-3. **`unlock.lua` has a bug** — The condition `redis.call('GET', KEYS[1] == ARGV[1])` incorrectly nests the equality check inside GET. It should be: `if redis.call('GET', KEYS[1]) == ARGV[1]`. The current code always evaluates KEYS[1] == ARGV[1] (which is false for integer comparison) first, then calls GET with 0/false. This should be fixed during the refactor.
-
-4. **Entity transient fields** — `Shop.distance`, `Voucher.stock/beginTime/endTime`, `Blog.icon/name/isLike` are all `@TableField(exist = false)`. They are populated at the Service layer, not from DB.
-
-5. **Password is stored in `application.yaml` in plaintext** — This must be externalized (env vars, config server) during the refactor.
-
-6. **File upload path is hardcoded** in `SystemConstants.IMAGE_UPLOAD_DIR` with a Windows absolute path. This should be configurable.
-
-7. **LoginInterceptor excludes `/blog/hot`** but uses it as an exact path match, not a pattern. Verify this matches the actual endpoint.
-
-8. **`SeckillVoucher` has `voucher_id` as primary key** (IdType.INPUT), meaning it's a one-to-one extension of `Voucher`. The `Voucher` entity has transient `stock`, `beginTime`, `endTime` — these actually come from `SeckillVoucher`.
-
----
-
-## Testing Notes
-
-- The project currently has no test classes (only `spring-boot-starter-test` dependency).
-- When adding tests, focus on:
-  - `CacheClient` — unit test cache hit/miss/penetration/expire scenarios with embedded Redis.
-  - `VoucherOrderServiceImpl` — integration test the full seckill flow with Redis Stream and DB.
-  - Lua scripts — test edge cases (zero stock, duplicate user, concurrent access).
-
----
-
-## Refactoring Guidelines
-
-When upgrading the project:
-
-1. **Keep the layer separation** — Controller/Service/Mapper boundaries are well-defined; don't blur them.
-2. **Preserve Redis key naming** — All keys are in `RedisConstants.java`; add new ones there.
-3. **Don't change the `Result` API** — Frontend likely depends on `{success, errorMsg, data, total}` shape.
-4. **Maintain the interceptor order** — RefreshToken (0) before Login (1). Token refresh must happen first.
-5. **Keep Lua scripts in `src/main/resources/`** — They're loaded via `ClassPathResource`.
-6. **`@Resource` over `@Autowired`** — Match the existing injection style.
-7. **MyBatis-Plus chain queries** — Continue using `query().eq().page()` style, not XML mappers.
-8. **Thread pool for cache rebuild** — Keep the 10-thread `CACHE_REBUILD_EXECUTOR` or make it configurable.
-9. **Redisson configuration** — Keep it programmatic in `RedisConfig` or move to application.yaml, but be consistent.
-
----
-
-## Common Commands
-
-```bash
-# Build
-mvn clean package -DskipTests
-
-# Run
-java -jar target/spotlink-0.0.1-SNAPSHOT.jar
-
-# Redis setup (one-time)
-redis-cli XGROUP CREATE stream.orders g1 0 MKSTREAM
-
-# Test seckill
-curl -X POST http://localhost:8081/voucher-order/seckill/{voucherId} \
-  -H "Authorization: {token}"
 ```
+sendCode (post /user/code) → 6 位随机码 → SET login:code:{phone} (2min TTL)
+login    (post /user/login) → 验证码校验 → 新建/查用户 → UUID token → Redis Hash (UserDTO)
+logout   (post /user/logout) → delete Redis token → UserHolder.removeUser()
+```
+
+**拦截器链**:
+1. `RefreshTokenInterceptor` (order=0, 全路径): `Authorization` header → `login:token:{token}` Hash → `UserDTO` → `UserHolder.saveUser()` → 刷新 TTL (+random 0-5min)
+2. `LoginInterceptor` (order=1): `UserHolder.getUser() == null` → 401
+
+**公开路径**: `/user/code`, `/user/login`, `/shop/**`, `/voucher/**`, `/shop-type/**`, `/upload/**`, `/blog/hot`
+
+### 2.4 博客社交
+
+```
+saveBlog      → save(blog) → 查粉丝 → ZADD feed:{follower} blogId timestamp
+likeBlog      → ZSCORE blog:liked:{id} → toggle → DB liked +/-1 → ZADD/ZREM
+queryHotBlog  → query().orderByDesc("liked").page() → 填充用户+点赞状态
+queryBlogOfFollow → ZREVRANGEBYSCORE feed:{userId} → ScrollResult 滚动分页
+```
+
+**Feed 推送模型**: 发布时推送到所有粉丝收件箱 (Redis ZSet, 按时间戳排序)。滚动分页通过 `lastId` + `offset` 实现。
+
+### 2.5 商铺 GEO 查询
+
+```
+queryShopByType(typeId, current, x, y)
+  ├─ x/y == null → 普通分页
+  └─ x/y 有值 → GEOSEARCH shop:geo:{typeId} FROMLONLAT x y BYRADIUS 5000m
+       → 手动内存分页 (from/end) → query().in("id", ids) → setDistance()
+```
+
+### 2.6 关注与签到
+
+- **关注**: DB insert/delete + Redis Set `follows:{userId}` (SAdd/SRem)
+- **共同关注**: SINTER `follows:{user1}` `follows:{user2}` → 批量查用户
+- **签到**: SETBIT `sign:{userId}:{yyyyMM}` (dayOfMonth-1) 1
+- **连续签到**: BITFIELD + 循环位运算 `num & 1`
+
+---
+
+## 三、关键调用关系图
+
+```
+VoucherOrderServiceImpl
+  ├─→ seckill.lua                (Lua 原子脚本)
+  ├─→ RedisIdWorker.nextId()     (分布式 ID)
+  ├─→ RabbitTemplate             (MQ 发送)
+  ├─→ RedissonClient.getLock()   (分布式锁)
+  ├─→ AopContext.currentProxy()  (自调用事务)
+  ├─→ ISeckillVoucherService     (乐观锁扣库存)
+  └─→ UserHolder.getUser()       ← RefreshTokenInterceptor 注入
+
+ShopServiceImpl
+  ├─→ CacheClient.queryWithPassThrough()  (唯一调用者)
+  ├─→ StringRedisTemplate (GEO/delete)
+  └─→ ShopMapper
+
+BlogServiceImpl
+  ├─→ StringRedisTemplate (ZAdd/ZScore/ZRevRangeByScore)
+  ├─→ FollowService.query()  (查粉丝)
+  └─→ UserHolder.getUser()
+
+FollowServiceImpl
+  ├─→ StringRedisTemplate (SAdd/SRem/SInter)
+  └─→ IUserService.listByIds()
+
+CacheClient (@Component, 独立工具)
+  ├─→ StringRedisTemplate
+  └─→ CACHE_REBUILD_EXECUTOR (10 线程)
+```
+
+---
+
+## 四、UserHolder 消费者 (CodeGraph 验证)
+
+`UserHolder` 被 6 个命名空间引用:
+- `com.sang.controller` — BlogController, UserController
+- `com.sang.service.impl` — BlogServiceImpl, FollowServiceImpl, UserServiceImpl, VoucherOrderServiceImpl
+
+---
+
+## 五、RabbitMQ 拓扑
+
+```
+spotlink.seckill.exchange  (DirectExchange)
+  └─ Binding: "spotlink.seckill.order"
+       └─→ spotlink.seckill.queue  (Durable)
+              └─ DLX → spotlink.seckill.dlx (DirectExchange)
+                   └─→ spotlink.seckill.dlq  (死信队列)
+```
+
+全部由 `RabbitMQConfig` @Bean 自动声明，启动即创建。
+
+---
+
+## 六、Redis Key 全景
+
+| Key 模式 | 用途 | 类型 | TTL |
+|----------|------|------|-----|
+| `login:code:{phone}` | 验证码 | String | 2 min |
+| `login:token:{token}` | 用户信息 | Hash | ~36000 min |
+| `cache:shop:{id}` | 店铺缓存 | String(JSON) | 30 min |
+| `cache:shop:type:{typeId}` | 店铺类型缓存 | String(JSON) | — |
+| `lock:shop:{id}` | 缓存互斥锁 | String | 10 sec |
+| `seckill:stock:{voucherId}` | 秒杀库存 | String(int) | — |
+| `seckill:order:dedup:{orderId}` | 幂等去重 | String | 7 days |
+| `blog:liked:{blogId}` | 点赞记录 | ZSet | — |
+| `feed:{userId}` | 关注流收件箱 | ZSet | — |
+| `shop:geo:{typeId}` | 商铺坐标 | Geo | — |
+| `sign:{userId}:{yyyyMM}` | 签到记录 | BitMap | — |
+| `follows:{userId}` | 关注列表 | Set | — |
+
+---
+
+## 七、技术栈
+
+| 关注点 | 选型 | 约束 |
+|--------|------|------|
+| 框架 | Spring Boot 3.5.14 | Jakarta 命名空间 |
+| Java | 21 | — |
+| ORM | MyBatis-Plus 3.5.16 | chain query, 避免 XML |
+| Redis 客户端 | Lettuce 6.8.1 | 仅用 `StringRedisTemplate` |
+| MQ | RabbitMQ + Spring AMQP | 手动 ACK, app 层重试 |
+| 分布式锁 | Redisson 3.22.0 + SimpleRedisLock | Redisson=业务, Simple=轻量 |
+| API 文档 | springdoc 2.7.0 + Knife4j 4.5.0 | Swagger UI `/swagger-ui.html` |
+| JSON | Hutool `JSONUtil` | RabbitMQ 除外 (Jackson) |
+| Bean 复制 | Hutool `BeanUtil.copyProperties` | — |
+| DI | `@Resource` | 不用 `@Autowired` |
+
+---
+
+## 八、CodeGraph 验证的关键事实
+
+1. `CacheClient.queryWithPassThrough` 仅被 `ShopServiceImpl.queryById` 调用 — 修改签名只需改一处
+2. `CacheClient.queryWithLogicalExpire` 当前无调用者 — 备选方案
+3. `handleVoucherOrder` 仅被 `onSeckillOrderMessage` 调用 — 内部方法, 耦合度低
+4. `createVoucherOrder` 被 `handleVoucherOrder` (通过 AopContext) 调用 — 接口+实现需同步
+5. `seckill.lua` 纯 Redis 操作 — 不涉及 MQ, 变更不影响 Java 发送逻辑
+6. `unlock.lua` 已修复: `GET == ARGV[1]` 再 `DEL`, 防跨实例误释放
+7. RabbitMQ 拓扑全部 Bean 声明 — 启动自动创建
+8. `UserHolder` 6 个消费者 — ThreadLocal 渗透 Controller + Service
+9. `ShopServiceImpl` 唯一有测试覆盖 (`SpotLinkApplicationTests.java`)
+10. 全部 9 个 Controller 均有 `@Tag` + `@Operation`
+
+---
+
+## 九、已知风险点
+
+- `application.yaml` 含明文密码 (MySQL/Redis/RabbitMQ)
+- `SystemConstants.IMAGE_UPLOAD_DIR` 硬编码 Windows 路径
+- 秒杀 MQ 发送失败只有补偿回滚，无重试机制 (已标 TODO)
+- `BlogCommentsController` 空壳实现
+- 除 `ShopServiceImpl` 外，其他 Service 无测试覆盖
