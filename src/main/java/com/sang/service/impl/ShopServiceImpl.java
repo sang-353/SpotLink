@@ -106,17 +106,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
         return shop;
     }
-
-/*    public void saveShop2Redis(Long id, Long expireSeconds) {
-        // 查询店铺数据
-        Shop shop = getById(id);
-        // 封装逻辑过期时间
-        RedisData redisData = new RedisData();
-        redisData.setData(shop);
-        redisData.setExpireTime(LocalDateTime.now().plusSeconds(expireSeconds));
-        // 写入redis
-        stringRedisTemplate.opsForValue().set(CACHE_SHOP_KEY + id, JSONUtil.toJsonStr(redisData));
-    }*/
+    
     @Override
     @Transactional
     public Result update(Shop shop) {
