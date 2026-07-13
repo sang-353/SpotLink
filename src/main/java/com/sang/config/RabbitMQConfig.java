@@ -93,8 +93,11 @@ public class RabbitMQConfig {
         RabbitTemplate template = new RabbitTemplate(connectionFactory);
         template.setMessageConverter(converter);
         template.setConfirmCallback((correlationData, ack, cause) -> {
-            if (!ack && correlationData != null) {
-                log.error("消息未到达Exchange: id={}, cause={}", correlationData.getId(), cause);
+            if (ack) {
+                log.info("消息已到达Exchange: id={}",
+                        correlationData != null ? correlationData.getId() : "null");
+            } else {
+                log.error("消息未到达Exchange: id={}, cause={}", correlationData != null ? correlationData.getId() : "null", cause);
             }
         });
         return template;

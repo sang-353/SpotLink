@@ -16,6 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.support.AmqpHeaders;
 import org.springframework.aop.framework.AopContext;
@@ -60,8 +61,12 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private RabbitTemplate rabbitTemplate;
 
-    /** 最大重试次数 */
+    /** 消费者处理最大重试次数 */
     private static final int MAX_RETRY_COUNT = 3;
+    /** 生产者发送最大重试次数 */
+    private static final int MAX_SEND_RETRY = 3;
+    /** 发送重试间隔（毫秒） */
+    private static final long SEND_RETRY_INTERVAL_MS = 200;
 
     private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
     static {
@@ -84,13 +89,30 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         }
         // 为0，有购买资格,生成订单 ID
         long orderId = redisIdWorker.nextId("order");
-        // 发送消息到 RabbitMQ
+        // 发送消息到 RabbitMQ（带重试）
         SeckillOrderMessage message = new SeckillOrderMessage(orderId, userId, voucherId, 0);
-        try {
-            rabbitTemplate.convertAndSend(SECKILL_EXCHANGE, SECKILL_ROUTING_KEY, message);
-        } catch (Exception e) {
-            // 消息发送失败 → 回滚 Redis 操作（补偿）
-            log.error("秒杀消息发送失败: orderId={}, userId={}, voucherId={}", orderId, userId, voucherId, e);
+        CorrelationData correlationData = new CorrelationData(String.valueOf(orderId));
+        boolean sent = false;
+        for (int attempt = 1; attempt <= MAX_SEND_RETRY; attempt++) {
+            try {
+                rabbitTemplate.convertAndSend(SECKILL_EXCHANGE, SECKILL_ROUTING_KEY, message, correlationData);
+                sent = true;
+                break;
+            } catch (Exception e) {
+                log.warn("秒杀消息发送失败 (第{}次): orderId={}, userId={}", attempt, orderId, userId, e);
+                if (attempt < MAX_SEND_RETRY) {
+                    try {
+                        Thread.sleep(SEND_RETRY_INTERVAL_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        }
+        if (!sent) {
+            // 重试耗尽 → 回滚 Redis 操作（补偿）
+            log.error("秒杀消息发送失败（已达最大重试次数）: orderId={}, userId={}, voucherId={}", orderId, userId, voucherId);
             rollbackSeckill(voucherId, userId);
             return Result.fail("系统繁忙，请稍后重试");
         }
@@ -100,12 +122,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     }
 
     /** 消息发送失败时的 Redis 回滚 */
-    // TODO 消息发送失败重试，待修改
     private void rollbackSeckill(Long voucherId, Long userId) {
         stringRedisTemplate.opsForValue().increment(RedisConstants.SECKILL_STOCK_KEY + voucherId);
         stringRedisTemplate.opsForSet().remove("seckill:order" + voucherId, userId.toString());
     }
-
     // ==================== 消费者 ====================
     /**
      * RabbitMQ 监听器 — 异步创建订单
@@ -170,6 +190,14 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             }
         }
     }
+
+    @RabbitListener(queues = SECKILL_DLQ)
+    public void onSeckillDlqMessage(SeckillOrderMessage message) {
+        // 死信消息仅做告警记录，后续由人工或补偿任务处理
+        log.error("收到死信队列消息,订单需人工处理: orderId={}, userId={}, voucherId={}, retryCount={}",
+                message.getOrderId(), message.getUserId(), message.getVoucherId(), message.getRetryCount());
+    }
+
     // ==================== 订单处理 ====================
     /**
      * 处理单个订单（分布式锁 + 代理调用保证事务生效）
@@ -194,47 +222,6 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             lock.unlock();
         }
     }
-
-    /*@Override
-    public Result seckillVoucher(Long voucherId) {
-        // 查询优惠券
-        SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
-        // 判断秒杀是否开始
-        if (voucher.getBeginTime().isAfter(LocalDateTime.now())) {
-            return Result.fail("秒杀尚未开始");
-        }
-        // 判断秒杀是否结束
-        if (voucher.getEndTime().isBefore(LocalDateTime.now())) {
-            return Result.fail("秒杀已经结束");
-        }
-        // 判断库存是否充足
-        if (voucher.getStock() < 1) {
-            return Result.fail("库存不足");
-        }
-
-        Long userId = UserHolder.getUser().getId();
-        // 创建锁对象
-//        SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
-        RLock lock = redissonClient.getLock("lock:order" + userId);
-        // 获取锁 无参则为不等待，30秒释放
-        boolean isLock = lock.tryLock();
-        // 判断是否获取到锁
-        if(!isLock) {
-            return Result.fail("不能重复下单");
-        }
-        IVoucherOrderService proxy = null;
-        try {
-            // 获取代理对象,防止事务失效
-            proxy = (IVoucherOrderService) AopContext.currentProxy();
-            // 返回订单ID
-            return proxy.createVoucherOrder(voucherId);
-        } catch (IllegalStateException e) {
-            throw new RuntimeException(e);
-        }finally {
-            // 释放锁
-            lock.unlock();
-        }
-    }*/
 
     @Override
     @Transactional
