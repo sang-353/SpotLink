@@ -3,18 +3,30 @@ package com.sang.config;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;
 import org.redisson.config.Config;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration
 public class RedisConfig {
+
+    @Value("${spring.data.redis.host:localhost}")
+    private String host;
+
+    @Value("${spring.data.redis.port:6379}")
+    private int port;
+
+    @Value("${spring.data.redis.password:}")
+    private String password;
+
     @Bean
     public RedissonClient redissonClient() {
-        // 配置类
         Config config = new Config();
-        // 添加redis地址，此处为单点的地址，也可使用config.useClusterServers()配置集群地址
-        config.useSingleServer().setAddress("redis://127.0.0.1:6379").setPassword("dev123456");
-        // 创建客户端
+        String address = "redis://" + host + ":" + port;
+        config.useSingleServer().setAddress(address);
+        if (password != null && !password.isBlank()) {
+            config.useSingleServer().setPassword(password);
+        }
         return Redisson.create(config);
     }
 
