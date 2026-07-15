@@ -91,3 +91,9 @@ knife4j:
 logging:
   level:
     com.sang: debug
+
+# ==================== SpotLink 自定义配置 ====================
+spotlink:
+  cache:
+    # 缓存策略: pass-through | mutex | logical-expire
+    strategy: mutex
