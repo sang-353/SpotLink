@@ -1,0 +1,20 @@
+# ==================== Docker 环境配置 ====================
+# 启动方式: mvn spring-boot:run -Dspring-boot.run.profiles=docker
+#        或 IDEA 中 Active profiles 设为 docker
+#
+# 本地 application.yaml 为默认配置（连 localhost 默认端口）
+# 本文件仅覆盖 Docker 中间件端口差异，其余配置均继承 application.yaml
+
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3307/hmdp_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+    # username/password 沿用 application.yaml，无需覆盖
+
+  data:
+    redis:
+      port: 6380
+      # host/password 沿用 application.yaml，无需覆盖
+
+  rabbitmq:
+    port: 5673
+    # host/username/password/virtual-host 沿用 application.yaml，无需覆盖
