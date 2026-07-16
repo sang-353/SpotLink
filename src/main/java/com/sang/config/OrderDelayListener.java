@@ -13,6 +13,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.stereotype.Component;
 
+import static com.sang.utils.RedisConstants.SECKILL_STOCK_KEY;
 import static com.sang.utils.SystemConstants.ORDER_DELAY_QUEUE;
 
 /**
@@ -63,6 +64,10 @@ public class OrderDelayListener {
                         .setSql("stock = stock + 1")
                         .eq("voucher_id", message.getVoucherId())
                         .update();
+
+                // ② bis 回滚 Redis 库存（Lua 脚本中 INCRBY -1 的逆操作）
+                stringRedisTemplate.opsForValue()
+                        .increment(SECKILL_STOCK_KEY + message.getVoucherId());
 
                 // ③ 从 Redis Set 移除，允许用户重新秒杀该券
                 stringRedisTemplate.opsForSet()
