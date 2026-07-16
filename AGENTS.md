@@ -87,7 +87,7 @@ The MCP server returns "not initialized." Ask the user: *"I notice this project 
 
 # CodeGraph 代码图谱 (auto-generated 2026-07-12)
 
-> **索引状态**: 80 文件, 1,477 节点, 1,916 边, 2.77 MB — Java 75 + Lua 2 + XML 2 + YAML 1
+> **索引状态**: 82 文件, 1,540 节点, 2,039 边 — Java 77 + Lua 2 + XML 2 + YAML 1
 
 ---
 
