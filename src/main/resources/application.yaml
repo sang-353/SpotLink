@@ -97,3 +97,7 @@ spotlink:
   cache:
     # 缓存策略: pass-through | mutex | logical-expire
     strategy: mutex
+  order:
+    # 延迟队列功能开关 — 需 RabbitMQ 安装 rabbitmq_delayed_message_exchange 插件
+    delay:
+      enabled: true

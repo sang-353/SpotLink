@@ -1,6 +1,7 @@
 package com.sang.service.impl;
 
 import com.rabbitmq.client.Channel;
+import com.sang.dto.OrderDelayMessage;
 import com.sang.dto.Result;
 import com.sang.dto.SeckillOrderMessage;
 import com.sang.entity.VoucherOrder;
@@ -24,11 +25,13 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.messaging.handler.annotation.Header;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.concurrent.*;
 
@@ -60,6 +63,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     @Resource
     private RabbitTemplate rabbitTemplate;
+
+    /** 延迟队列功能开关（需 RabbitMQ 安装 delayed_message 插件） */
+    @Value("${spotlink.order.delay.enabled:false}")
+    private boolean orderDelayEnabled;
 
     /** 消费者处理最大重试次数 */
     private static final int MAX_RETRY_COUNT = 3;
@@ -201,6 +208,8 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     // ==================== 订单处理 ====================
     /**
      * 处理单个订单（分布式锁 + 代理调用保证事务生效）
+     *
+     * <p>订单创建成功后发送 15 分钟延迟消息，用于超时自动取消</p>
      */
     private void handleVoucherOrder(SeckillOrderMessage message) {
         Long userId = message.getUserId();
@@ -218,6 +227,22 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             // 通过代理对象调用，确保 @Transactional 生效
             IVoucherOrderService currentProxy = (IVoucherOrderService) AopContext.currentProxy();
             currentProxy.createVoucherOrder(voucherOrder);
+
+            // 发送 15 分钟延迟消息，用于超时自动取消（需启用延迟队列功能）
+            if (orderDelayEnabled) {
+                OrderDelayMessage delayMsg = new OrderDelayMessage(
+                        message.getOrderId(), message.getUserId(), message.getVoucherId());
+                rabbitTemplate.convertAndSend(
+                        ORDER_DELAY_EXCHANGE,
+                        ORDER_DELAY_ROUTING_KEY,
+                        delayMsg,
+                        msg -> {
+                            msg.getMessageProperties()
+                                    .setHeader("x-delay", ORDER_DELAY_MS);
+                            return msg;
+                        });
+                log.debug("延迟取消消息已发送: orderId={}, delay={}ms", message.getOrderId(), ORDER_DELAY_MS);
+            }
         } finally {
             lock.unlock();
         }
@@ -246,7 +271,24 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             log.error("库存不足");
             throw new RuntimeException("库存不足: voucherId=" + voucherOrder.getVoucherId());
         }
-        // 保存订单
+        // 保存订单（初始状态：未支付）
+        voucherOrder.setStatus(1);
         save(voucherOrder);
+    }
+
+    @Override
+    public Result payOrder(Long orderId, Long userId) {
+        VoucherOrder order = getById(orderId);
+        if (order == null || !order.getUserId().equals(userId)) {
+            return Result.fail("订单不存在");
+        }
+        if (order.getStatus() != 1) {
+            return Result.fail("订单状态不允许支付");
+        }
+        order.setStatus(2);
+        order.setPayTime(LocalDateTime.now());
+        updateById(order);
+        log.info("订单支付成功: orderId={}, userId={}", orderId, userId);
+        return Result.ok();
     }
 }

@@ -17,4 +17,12 @@ public class SystemConstants {
     public static final String SECKILL_DLQ = "spotlink.seckill.dlq";
     public static final String SECKILL_DLX_ROUTING_KEY = "spotlink.seckill.dlx";
 
+    // ========== 延迟队列（订单超时取消）==========
+    public static final String ORDER_DELAY_EXCHANGE = "spotlink.order.delay.exchange";
+    public static final String ORDER_DELAY_QUEUE = "spotlink.order.delay.queue";
+    public static final String ORDER_DELAY_ROUTING_KEY = "spotlink.order.delay";
+
+    /** 订单超时取消延迟（毫秒），默认 15 分钟 */
+    public static final int ORDER_DELAY_MS = 15 * 60 * 1000;
+
 }

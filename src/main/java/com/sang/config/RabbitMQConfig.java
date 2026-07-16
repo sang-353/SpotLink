@@ -6,8 +6,11 @@ import org.springframework.amqp.core.*;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.util.Map;
 
 import static com.sang.utils.SystemConstants.SECKILL_QUEUE;
 
@@ -54,6 +57,39 @@ public class RabbitMQConfig {
         return BindingBuilder.bind(seckillQueue())
                 .to(seckillExchange())
                 .with(SystemConstants.SECKILL_ROUTING_KEY);
+    }
+
+    // ======================== 延迟队列（订单超时取消）========================
+    /**
+     * 延迟队列配置 — 需 RabbitMQ 安装 rabbitmq_delayed_message_exchange 插件
+     * 未安装插件时设置 spotlink.order.delay.enabled=false 跳过此配置
+     */
+    @Configuration
+    @ConditionalOnProperty(name = "spotlink.order.delay.enabled", havingValue = "true", matchIfMissing = false)
+    public static class DelayQueueConfig {
+        @Bean
+        public CustomExchange orderDelayExchange() {
+            return new CustomExchange(SystemConstants.ORDER_DELAY_EXCHANGE,
+                    "x-delayed-message",        // 交换机类型
+                    true,                        // 持久化
+                    false,                       // 不自动删除
+                    Map.of("x-delayed-type", "direct")  // 实际路由方式
+            );
+        }
+
+        @Bean
+        public Queue orderDelayQueue() {
+            return new Queue(SystemConstants.ORDER_DELAY_QUEUE, true);
+        }
+
+        @Bean
+        public Binding orderDelayBinding() {
+            return BindingBuilder
+                    .bind(orderDelayQueue())
+                    .to(orderDelayExchange())
+                    .with(SystemConstants.ORDER_DELAY_ROUTING_KEY)
+                    .noargs();
+        }
     }
 
     // ========================消息转换器========================
