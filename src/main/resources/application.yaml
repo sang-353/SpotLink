@@ -91,3 +91,10 @@ knife4j:
 logging:
   level:
     com.sang: debug
+
+# SpotLink 自定义配置
+spotlink:
+  order:
+    # 延迟队列功能开关 — 需 RabbitMQ 安装 rabbitmq_delayed_message_exchange 插件
+    delay:
+      enabled: true
